@@ -1,0 +1,27 @@
+# ── Secrets & Credentials ─────────────────────────────────────────────────────
+docker/.env
+terraform/terraform.tfvars
+*.tfvars
+!*.tfvars.example
+
+# ── Terraform State & Cache ───────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+tfplan
+
+# ── Mosquitto Password File ───────────────────────────────────────────────────
+docker/mosquitto_passwd
+
+# ── OS & Editor Artifacts ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log

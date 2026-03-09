@@ -1,0 +1,187 @@
+################################################################################
+# Zero-Trust Mesh VPN — Docker Compose
+# Netmaker Control Plane Stack (2025/2026 production setup)
+#
+# Services:
+#   netmaker     — Core API server (Go)
+#   netmaker-ui  — React management dashboard
+#   mq           — Eclipse Mosquitto MQTT broker (node signaling)
+#   caddy        — Reverse proxy + automatic Let's Encrypt TLS
+#
+# Usage:
+#   cp .env.example .env && nano .env
+#   docker compose up -d
+################################################################################
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Netmaker — Core API & Control Plane
+  # ─────────────────────────────────────────────────────────────────────────
+  netmaker:
+    image: gravitl/netmaker:v0.26.0
+    container_name: netmaker
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN       # Required for WireGuard interface management
+      - NET_RAW
+      - SYS_MODULE      # Required to load wireguard kernel module
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+    volumes:
+      - /etc/netmaker:/etc/netmaker         # Persistent config & keys
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+    environment:
+      # ── Server Identity ─────────────────────────────────────────────────
+      SERVER_NAME: "broker.${BASE_DOMAIN}"
+      SERVER_HOST: "${SERVER_HOST}"        # Public IP of this host
+      SERVER_HTTP_HOST: "api.${BASE_DOMAIN}"
+      SERVER_GRPC_HOST: "api.${BASE_DOMAIN}"
+      SERVER_API_CONN_STRING: "api.${BASE_DOMAIN}:443"
+      SERVER_GRPC_PORT: "443"
+      API_PORT: "8081"
+      GRPC_PORT: "50051"
+
+      # ── Security ────────────────────────────────────────────────────────
+      MASTER_KEY: "${MASTER_KEY}"          # Change this! Protects the root API
+      JWT_VALIDITY_DURATION: "43800"       # Token validity in minutes (30 days)
+      RAC_AUTO_DISABLE: "false"
+      CORS_ALLOWED_ORIGIN: "*"
+      DISPLAY_KEYS: "true"                 # Show WireGuard keys in UI (production: false)
+
+      # ── Database ────────────────────────────────────────────────────────
+      DATABASE: "sqlite"                   # Use 'postgres' for HA production
+      # DB_HOST: "postgres"               # Uncomment for postgres
+      # DB_PORT: "5432"
+      # DB_USER: "${POSTGRES_USER}"
+      # DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      # DB_NAME: "netmaker"
+
+      # ── MQTT Broker ─────────────────────────────────────────────────────
+      MQ_HOST: "mq"
+      MQ_PORT: "1883"                      # Internal plain port (Caddy does TLS)
+      MQ_SERVER_PORT: "8883"               # External TLS port for client nodes
+      MQ_USERNAME: "${MQ_USERNAME}"
+      MQ_PASSWORD: "${MQ_PASSWORD}"
+
+      # ── Features ────────────────────────────────────────────────────────
+      MANAGE_IPTABLES: "on"
+      PORT_FORWARD_SERVICES: ""
+      METRICS_EXPORTER: "off"
+      VERBOSITY: "1"
+
+    depends_on:
+      mq:
+        condition: service_healthy
+    networks:
+      - netmaker-backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Netmaker UI — React Management Dashboard
+  # ─────────────────────────────────────────────────────────────────────────
+  netmaker-ui:
+    image: gravitl/netmaker-ui:v0.26.0
+    container_name: netmaker-ui
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: "https://api.${BASE_DOMAIN}"
+    depends_on:
+      - netmaker
+    networks:
+      - netmaker-backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Mosquitto — MQTT Broker (Node Signaling)
+  # Real-time WireGuard peer updates pushed to all nodes via MQTT
+  # ─────────────────────────────────────────────────────────────────────────
+  mq:
+    image: eclipse-mosquitto:2.0
+    container_name: netmaker-mq
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    ports:
+      - "1883:1883"     # Plain MQTT (internal only — not exposed in firewall)
+      - "8883:8883"     # MQTT over TLS (exposed to nodes)
+    networks:
+      - netmaker-backend
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t 'healthcheck' -m 'ping' -q 0 2>/dev/null && echo ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Caddy — Reverse Proxy + Automatic TLS (Let's Encrypt)
+  # Terminates HTTPS and MQTT-TLS; routes to internal services
+  # ─────────────────────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: netmaker-caddy
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"         # ACME HTTP-01 challenge
+      - "443:443"       # HTTPS
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    environment:
+      BASE_DOMAIN: "${BASE_DOMAIN}"
+    depends_on:
+      - netmaker
+      - netmaker-ui
+    networks:
+      - netmaker-backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+################################################################################
+# Networks
+################################################################################
+
+networks:
+  netmaker-backend:
+    driver: bridge
+    name: netmaker-backend
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+################################################################################
+# Volumes — persistent data survives container restarts and upgrades
+################################################################################
+
+volumes:
+  mosquitto-data:
+    name: netmaker-mosquitto-data
+  mosquitto-log:
+    name: netmaker-mosquitto-log
+  caddy-data:
+    name: netmaker-caddy-data
+  caddy-config:
+    name: netmaker-caddy-config

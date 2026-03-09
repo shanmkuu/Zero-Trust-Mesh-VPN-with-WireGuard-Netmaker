@@ -1,0 +1,89 @@
+################################################################################
+# Caddyfile — Netmaker Reverse Proxy with Automatic TLS
+#
+# Caddy auto-obtains and renews Let's Encrypt certificates.
+# All HTTP traffic is auto-redirected to HTTPS.
+#
+# Subdomains handled:
+#   api.{$BASE_DOMAIN}        → Netmaker REST API  (port 8081)
+#   dashboard.{$BASE_DOMAIN}  → Netmaker React UI  (port 80)
+#   broker.{$BASE_DOMAIN}     → Mosquitto MQTT-TLS termination (TCP 8883)
+################################################################################
+
+# ── Global Options ────────────────────────────────────────────────────────────
+{
+    # Contact email for Let's Encrypt notifications
+    email admin@{$BASE_DOMAIN}
+
+    # Security headers applied globally
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+# ── Netmaker REST API ──────────────────────────────────────────────────────────
+api.{$BASE_DOMAIN} {
+    reverse_proxy netmaker:8081 {
+        header_up Host {upstream_hostport}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/api-access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+
+# ── Netmaker Dashboard (React UI) ──────────────────────────────────────────────
+dashboard.{$BASE_DOMAIN} {
+    reverse_proxy netmaker-ui:80 {
+        header_up Host {upstream_hostport}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+    }
+
+    # Serve static assets efficiently
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Content-Security-Policy "default-src 'self' https://api.{$BASE_DOMAIN}; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/ui-access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+
+# ── MQTT Broker (TLS termination for nodes) ────────────────────────────────────
+# Caddy proxies raw TCP for MQTT-TLS (broker.domain:8883)
+# so Netmaker nodes communicate securely with the MQTT broker
+broker.{$BASE_DOMAIN}:8883 {
+    tls {
+        protocols tls1.2 tls1.3
+    }
+
+    route {
+        reverse_proxy mq:1883
+    }
+}

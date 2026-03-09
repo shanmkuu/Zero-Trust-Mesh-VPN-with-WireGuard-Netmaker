@@ -1,0 +1,10 @@
+# Terraform variables for this deployment — DO NOT COMMIT
+# Copy this file: cp terraform.tfvars.example terraform.tfvars
+# Then fill in your actual values
+
+do_token            = "dop_v1_YOUR_DIGITALOCEAN_API_TOKEN_HERE"
+region              = "nyc3"
+droplet_size        = "s-2vcpu-4gb"
+ssh_key_fingerprint = "ab:cd:ef:12:34:56:78:90:ab:cd:ef:12:34:56:78:90"
+base_domain         = "vpn.yourdomain.com"
+environment         = "production"
